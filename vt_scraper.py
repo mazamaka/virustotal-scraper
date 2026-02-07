@@ -8,12 +8,38 @@ import asyncio
 import base64
 import csv
 import json
+import random  # noqa: F401 - used in scan_with_retry
 import time
 from pathlib import Path
 
 import nodriver as uc
 
 JSON_DIR = Path(__file__).parent / "json"
+PROXIES_FILE = Path(__file__).parent / "proxies.csv"
+
+
+def load_all_proxies(csv_path: Path | None = None) -> list[str]:
+    """Load all valid proxies from CSV file."""
+    path = csv_path or PROXIES_FILE
+    if not path.exists():
+        return []
+
+    proxies = []
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("Valid", "").strip('"') != "true":
+                continue
+            protocol = row.get("Protocol", "socks5")
+            host = row.get("Host", "")
+            port = row.get("Port", "")
+            login = row.get("Login", "")
+            password = row.get("Password", "")
+            if host and port and login and password:
+                proto = "socks" if "socks" in protocol.lower() else protocol
+                proxies.append(f"{proto}://{login}:{password}@{host}:{port}")
+    return proxies
+
 
 JS_GET_ALL_TEXT = """
 function getAllText(root) {
@@ -308,7 +334,7 @@ async def upload_and_scan(file_path: Path, proxy: str | None = None) -> dict:
 
         # Poll DOM for status (no extra network requests)
         analysis_started = False
-        for i in range(120):  # Max 2 minutes
+        for i in range(180):  # Max 3 minutes
             dom_status = await tab.evaluate(JS_CHECK_STATUS)
 
             if dom_status:
@@ -388,6 +414,49 @@ def save_result(result: dict) -> Path | None:
     return out_file
 
 
+async def scan_with_retry(
+    file_path: Path,
+    proxy: str | None = None,
+    max_retries: int = 3,
+    proxy_pool: list[str] | None = None,
+) -> dict:
+    """Scan file with retry logic and proxy rotation on failure."""
+    used_proxies: set[str] = set()
+    if proxy:
+        used_proxies.add(proxy)
+
+    for attempt in range(max_retries):
+        current_proxy = proxy
+
+        # On retry, try a different proxy from pool
+        if attempt > 0 and proxy_pool:
+            available = [p for p in proxy_pool if p not in used_proxies]
+            if available:
+                current_proxy = random.choice(available)
+                used_proxies.add(current_proxy)
+                print(f"[!] Retry {attempt + 1}/{max_retries} with new proxy")
+            else:
+                print(f"[!] Retry {attempt + 1}/{max_retries} (no more proxies)")
+
+        result = await upload_and_scan(file_path, current_proxy)
+
+        # Check if successful
+        if result.get("stats") and result["stats"].get("total", 0) > 0:
+            return result
+
+        # Check for recoverable errors
+        if result.get("status") == "timeout" or result.get("error"):
+            error_msg = result.get("error") or "timeout"
+            print(f"[!] Failed: {error_msg}")
+            if attempt < max_retries - 1:
+                continue
+
+        # Non-recoverable or last attempt
+        break
+
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="VirusTotal file scanner")
     parser.add_argument("files", nargs="+", help="Files to scan")
@@ -395,6 +464,18 @@ def main() -> None:
         "--proxy",
         "-p",
         help="Proxy (socks://user:pass@host:port) or path to CSV file",
+    )
+    parser.add_argument(
+        "--retries",
+        "-r",
+        type=int,
+        default=3,
+        help="Max retries on failure (default: 3)",
+    )
+    parser.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="Disable retry logic",
     )
     args = parser.parse_args()
 
@@ -407,8 +488,18 @@ def main() -> None:
         else:
             proxy = args.proxy
 
+    # Load proxy pool for retry rotation
+    proxy_pool = load_all_proxies() if not args.no_retry else []
+    if proxy_pool:
+        print(f"[*] Loaded {len(proxy_pool)} proxies for rotation")
+
     for fp in args.files:
-        result = uc.loop().run_until_complete(upload_and_scan(Path(fp), proxy))
+        if args.no_retry:
+            result = uc.loop().run_until_complete(upload_and_scan(Path(fp), proxy))
+        else:
+            result = uc.loop().run_until_complete(
+                scan_with_retry(Path(fp), proxy, args.retries, proxy_pool)
+            )
         print(json.dumps(result, indent=2))
         if out := save_result(result):
             print(f"Saved: {out}")
