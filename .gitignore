@@ -9,3 +9,5 @@ venv/
 .mypy_cache/
 json/
 .idea/
+bench_data/
+data/
