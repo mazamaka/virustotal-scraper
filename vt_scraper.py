@@ -110,6 +110,99 @@ JS_GET_SHA256 = (
 """
 )
 
+JS_GET_FULL_REPORT = """
+(() => {
+    const result = {
+        hashes: {},
+        file_info: {},
+        stats: {},
+        detections: {}
+    };
+
+    // Known AV vendors (full names)
+    const knownVendors = new Set([
+        'Bkav', 'Lionic', 'MicroWorld-eScan', 'ClamAV', 'CMC', 'CAT-QuickHeal',
+        'Skyhigh', 'ALYac', 'Malwarebytes', 'VIPRE', 'Sangfor', 'K7AntiVirus',
+        'K7GW', 'CrowdStrike', 'Arcabit', 'Baidu', 'VirIT', 'Symantec',
+        'ESET-NOD32', 'TrendMicro-HouseCall', 'Avast', 'Cynet', 'Kaspersky',
+        'BitDefender', 'NANO-Antivirus', 'SUPERAntiSpyware', 'Tencent', 'Sophos',
+        'F-Secure', 'DrWeb', 'Zillya', 'TrendMicro', 'McAfee', 'CTX', 'Emsisoft',
+        'Huorong', 'Jiangmin', 'Google', 'Avira', 'Antiy-AVL', 'Kingsoft',
+        'Gridinsoft', 'Xcitium', 'Microsoft', 'ViRobot', 'ZoneAlarm', 'GData',
+        'Varist', 'AhnLab-V3', 'Acronis', 'VBA32', 'TACHYON', 'Zoner', 'Rising',
+        'Yandex', 'Ikarus', 'MaxSecure', 'Fortinet', 'AVG', 'Panda',
+        'Avast-Mobile', 'SymantecMobileInsight', 'BitDefenderFalx', 'Elastic',
+        'DeepInstinct', 'Webroot', 'APEX', 'Paloalto', 'Alibaba', 'Trapmine',
+        'Cylance', 'SentinelOne', 'TEHTRIS', 'Trustlook', 'AliCloud', 'WithSecure',
+        'SecureAge', 'Cyren', 'eScan', 'TotalDefense', 'Comodo', 'Qihoo-360',
+        'ZoneAlarm-Check-Point', 'McAfee-GW-Edition', 'TrendMicro-HouseCall',
+        'Trellix', 'TrellixENS'
+    ]);
+
+    // Helper: get text from Shadow DOM
+    function getAllText(root) {
+        let text = '';
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+            text += walker.currentNode.textContent + ' ';
+        }
+        root.querySelectorAll('*').forEach(el => {
+            if (el.shadowRoot) text += getAllText(el.shadowRoot);
+        });
+        return text;
+    }
+
+    const text = getAllText(document.body);
+
+    // Extract hashes - look for labeled hashes
+    const sha256Match = text.match(/SHA-?256\\s*([a-f0-9]{64})/i) ||
+                        text.match(/\\b([a-f0-9]{64})\\b/i);
+    const sha1Match = text.match(/SHA-?1\\s*([a-f0-9]{40})/i) ||
+                      text.match(/\\b([a-f0-9]{40})\\b(?!\\w)/i);
+    const md5Match = text.match(/MD5\\s*([a-f0-9]{32})/i) ||
+                     text.match(/\\b([a-f0-9]{32})\\b(?!\\w)/i);
+
+    if (sha256Match) result.hashes.sha256 = sha256Match[1].toLowerCase();
+    if (sha1Match) result.hashes.sha1 = sha1Match[1].toLowerCase();
+    if (md5Match) result.hashes.md5 = md5Match[1].toLowerCase();
+
+    // Extract file size
+    const sizeMatch = text.match(/(\\d+(?:\\.\\d+)?\\s*[KMG]?B)\\s*Size/i) ||
+                      text.match(/Size\\s*(\\d+(?:\\.\\d+)?\\s*[KMG]?B)/i) ||
+                      text.match(/(\\d+)\\s*bytes/i);
+    if (sizeMatch) result.file_info.size = sizeMatch[1];
+
+    // Extract detection stats
+    const statsMatch = text.match(/(\\d+)\\s*\\/\\s*(\\d+)\\s*security vendors/i);
+    if (statsMatch) {
+        result.stats.malicious = parseInt(statsMatch[1]);
+        result.stats.total = parseInt(statsMatch[2]);
+    }
+
+    // Parse vendor results - match known vendors followed by status
+    for (const vendor of knownVendors) {
+        const escapedVendor = vendor.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+        const pattern = new RegExp(escapedVendor + '\\\\s+(Undetected|Type-unsupported|Unable to process|Timeout|Clean|Malicious|Suspicious)', 'i');
+        const match = text.match(pattern);
+        if (match) {
+            const status = match[1].toLowerCase();
+            let category = 'undetected';
+            if (status === 'malicious') category = 'malicious';
+            else if (status === 'suspicious') category = 'suspicious';
+            else if (status === 'type-unsupported' || status === 'unable to process') category = 'type-unsupported';
+            else if (status === 'timeout') category = 'timeout';
+
+            result.detections[vendor] = {
+                result: category === 'malicious' ? 'detected' : null,
+                category: category
+            };
+        }
+    }
+
+    return JSON.stringify(result);
+})()
+"""
+
 
 def load_proxy_from_csv(csv_path: str) -> str | None:
     """Load SOAX proxy from CSV file."""
@@ -244,15 +337,27 @@ async def upload_and_scan(file_path: Path, proxy: str | None = None) -> dict:
                         t = int(time.time() - start)
                         print(f"[{status['detections']}/{status['total']}] OK ({t}s)")
 
-                        sha256 = await tab.evaluate(JS_GET_SHA256)
+                        # Get full report from DOM
+                        report_json = await tab.evaluate(JS_GET_FULL_REPORT)
+                        try:
+                            report = json.loads(report_json) if report_json else {}
+                        except json.JSONDecodeError:
+                            report = {}
+
+                        sha256 = report.get("hashes", {}).get("sha256")
+                        if not sha256:
+                            sha256 = await tab.evaluate(JS_GET_SHA256)
 
                         return {
                             "sha256": sha256,
+                            "sha1": report.get("hashes", {}).get("sha1"),
                             "md5": md5,
+                            "file_info": report.get("file_info", {}),
                             "stats": {
                                 "malicious": status["detections"],
                                 "total": status["total"],
                             },
+                            "detections": report.get("detections", {}),
                             "scan_time": t,
                         }
 
