@@ -1,0 +1,12 @@
+[project]
+name = "virustotal-scraper"
+version = "0.1.0"
+description = "VirusTotal file scanner via browser automation"
+requires-python = ">=3.11"
+dependencies = [
+    "nodriver>=0.38",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+vt-scan = "vt_scraper:main"
