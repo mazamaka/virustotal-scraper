@@ -239,7 +239,7 @@ async def upload_and_scan(file_path: Path, proxy: str | None = None) -> dict:
     with open(file_path, "rb") as f:
         file_b64 = base64.b64encode(f.read()).decode()
 
-    browser = await uc.start(headless=False)
+    browser = await uc.start(headless=True)
 
     try:
         # Open VT with optional proxy
