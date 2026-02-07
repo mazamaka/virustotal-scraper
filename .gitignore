@@ -7,3 +7,5 @@ venv/
 *.log
 .ruff_cache/
 .mypy_cache/
+json/
+.idea/

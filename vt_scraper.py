@@ -22,7 +22,7 @@ async def upload_and_scan(file_path: Path) -> dict:
     with open(file_path, "rb") as f:
         file_b64 = base64.b64encode(f.read()).decode()
 
-    browser = await uc.start(headless=False)
+    browser = await uc.start(headless=True)
 
     try:
         tab = await browser.get("https://www.virustotal.com/")
@@ -166,6 +166,15 @@ def main():
     fp = Path(sys.argv[1])
     r = uc.loop().run_until_complete(upload_and_scan(fp))
     print(json.dumps(r, indent=2))
+
+    # Сохраняем в json директорию
+    if "sha256" in r or "md5" in r:
+        json_dir = Path(__file__).parent / "json"
+        json_dir.mkdir(exist_ok=True)
+        hash_name = r.get("sha256") or r.get("md5")
+        out_file = json_dir / f"{hash_name}.json"
+        out_file.write_text(json.dumps(r, indent=2, ensure_ascii=False))
+        print(f"\nSaved: {out_file}")
 
 
 if __name__ == "__main__":
