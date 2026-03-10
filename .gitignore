@@ -11,3 +11,4 @@ json/
 .idea/
 bench_data/
 data/
+proxies.csv
