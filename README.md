@@ -1,318 +1,148 @@
 # VirusTotal Scraper
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-supported-blue?logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macos-lightgrey)
 
-VirusTotal file scanner via browser automation and HTTP API. Upload files, scan for malware, and retrieve detailed analysis reports without manual interaction.
+Multi-strategy VirusTotal scanner: upload files, look up hashes, check URLs/domains/IPs. Supports browser automation, HTTP API, and official VT API v3 with smart rate limiting and proxy rotation.
 
 ## Features
 
-- **Two scanning approaches:**
-  - Browser automation (`vt_scraper.py`): Uses headless Chrome with DOM parsing, minimal network requests
-  - HTTP API (`vt_api.py`): Direct API requests, multiple lookup modes, official VT API v3 support
+- **4 scanning modules** with different trade-offs (speed, rate limits, detail level)
+- **Browser automation** (`vt_scraper.py`) -- headless Chromium, Shadow DOM parsing, no API key needed
+- **HTTP API** (`vt_api.py`) -- internal VT UI endpoints, proxy rotation, Sysinternals bulk fallback
+- **Official API v3** (`vt_api_v3.py`) -- smart rate limiter with 3-key rotation (~12 req/min)
+- **URL/Domain/IP checker** (`vt_url_checker.py`) -- parallel checking with worker pools
+- **Proxy rotation** with CSV-based proxy pools and automatic failover
+- **JSON result persistence** in `./json/` directory
 
-- **File upload and scan:** Upload files directly to VirusTotal and wait for analysis completion
+## Quick Start
 
-- **Hash lookup:** Query existing scan results by MD5/SHA1/SHA256 without uploading
-
-- **Proxy rotation:** Built-in proxy support with automatic rotation on failures
-
-- **Result persistence:** Save scan results as JSON files for later processing
-
-- **Rate limit handling:** API key rotation, retry logic, Sysinternals bulk API fallback
-
-- **Shadow DOM support:** Parse results from modern VirusTotal UI with Shadow DOM
-
-## Installation
-
-### Requirements
-
-- Python 3.11+
-- For browser automation: Chromium (or use Docker)
-
-### From source
+### With Docker
 
 ```bash
-git clone https://github.com/yourusername/virustotal-scraper.git
+git clone https://github.com/mazamaka/virustotal-scraper.git
 cd virustotal-scraper
-pip install -e .
+
+# Build
+docker compose build
+
+# Scan a file
+docker compose run --rm vt-scraper /data/sample.exe
 ```
 
-### Docker
+### Without Docker
 
 ```bash
-docker-compose up -d
-docker-compose exec vt-scraper python vt_scraper.py /data/sample.exe
+pip install nodriver httpx
+
+# Browser scan (no API key needed)
+python vt_scraper.py /path/to/file.exe
+
+# API v3 hash lookup
+python vt_api_v3.py <sha256_hash>
+
+# Bulk hash check (no rate limits)
+python vt_api.py <hash1> <hash2> --bulk
+
+# URL check
+python vt_url_checker.py https://example.com
 ```
 
-## Usage
+## Modules
 
-### Browser Automation Approach
+| Module | Method | Speed | Rate Limit | Detail |
+|--------|--------|-------|-----------|--------|
+| `vt_scraper.py` | Headless browser | 20-60s/file | None | Full |
+| `vt_api.py` | Internal HTTP API | 1-5s/lookup | ~4 req/min | Full |
+| `vt_api_v3.py` | Official API v3 | 1-5s/lookup | ~12 req/min (3 keys) | Full |
+| `vt_api.py --bulk` | Sysinternals API | <1s/hash | None | Detection count only |
+| `vt_url_checker.py` | API v3 | 1-3s/url | ~4 req/min/key | Full |
 
-Upload and scan a file:
-
-```bash
-vt-scan /path/to/file.exe
-```
-
-With proxy:
-
-```bash
-vt-scan /path/to/file.exe --proxy socks5://user:pass@proxy.host:1080
-```
-
-Proxy CSV file support:
+## Usage Examples
 
 ```bash
-vt-scan /path/to/file.exe --proxy proxies.csv
-```
+# Upload file via browser with proxy
+python vt_scraper.py file.exe --proxy socks5://user:pass@host:1080
 
-With retry logic:
+# Upload file via browser with proxy CSV and retry
+python vt_scraper.py file.exe --proxy proxies.csv --retries 5
 
-```bash
-vt-scan /path/to/file.exe --retries 5
-```
+# Look up hash via official API v3
+python vt_api_v3.py abc123def456 --lookup
 
-Disable retry:
+# Upload file via API v3 (waits for analysis)
+python vt_api_v3.py /path/to/file.exe --upload
 
-```bash
-vt-scan /path/to/file.exe --no-retry
-```
+# Request rescan of known file
+python vt_api_v3.py <sha256> --rescan
 
-### API Approach (`vt_api.py`)
+# Bulk hash check (fast, no rate limits)
+python vt_api.py hash1 hash2 hash3 --bulk
 
-Upload and scan file via official VT API:
+# Full report via browser DOM (bypasses reCAPTCHA)
+python vt_api.py <hash> --browser
 
-```bash
-python vt_api.py /path/to/file.exe --api
-```
+# Check multiple URLs in parallel
+python vt_url_checker.py url1 url2 --workers 3 --output results.json
 
-Lookup hash (quick check via Sysinternals API, no rate limits):
-
-```bash
-python vt_api.py abc123def456 --bulk
-```
-
-Lookup hash with full report via browser (bypasses reCAPTCHA):
-
-```bash
-python vt_api.py abc123def456 --browser
-```
-
-Lookup hash with official VT API:
-
-```bash
-python vt_api.py abc123def456 --api
-```
-
-Extract your personal API key from browser session:
-
-```bash
+# Extract your VT API key from browser session
 python vt_api.py --extract-key
-# Opens browser for login, then extracts and displays your API key
 ```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VT_API_KEY` | Personal VirusTotal API key | Built-in public keys |
+| `CHROME_PATH` | Path to Chromium binary | Auto-detected |
 
 ## Proxy CSV Format
 
-If using a proxy CSV file, format must be:
-
 ```csv
 Protocol,Host,Port,Login,Password,Valid
-socks5,proxy.example.com,1080,username,password,"true"
+socks5,proxy.example.com,1080,user,pass,"true"
 http,proxy2.example.com,8080,user2,pass2,"true"
 ```
 
-The scanner reads only rows where `Valid="true"`.
+Only rows with `Valid="true"` are used. Proxies rotate automatically on failure.
 
 ## Output Format
 
-### JSON Result Structure
+Results are saved to `./json/<hash>.json`:
 
 ```json
 {
   "sha256": "abc123...",
-  "sha1": "def456...",
-  "md5": "ghi789...",
-  "file_info": {
-    "size": "1.5 MB",
-    "type": "PE executable"
-  },
-  "stats": {
-    "malicious": 5,
-    "total": 70
-  },
-  "detections": {
-    "Kaspersky": {
-      "result": "detected",
-      "category": "malicious"
-    },
-    "ESET-NOD32": {
-      "result": null,
-      "category": "undetected"
-    }
-  },
+  "md5": "def456...",
+  "stats": { "malicious": 5, "total": 70 },
+  "detections": { "Kaspersky": { "result": "detected" } },
   "scan_time": 45
 }
 ```
 
-Results are saved to `./json/{hash}.json` automatically.
+## Project Structure
 
-## Configuration
-
-### Browser Automation
-
-The browser approach uses `nodriver` to control Chromium in headless mode. Key environment variables:
-
-- `CHROME_PATH`: Path to Chromium binary (default: detected automatically)
-
-### API Approach
-
-The API approach includes built-in public API keys and supports proxy rotation. For better rate limits, set your own API key:
-
-```bash
-export VT_API_KEY="your_64_char_key"
-python vt_api.py target --api
 ```
-
-## Error Handling
-
-### Browser Approach
-
-- Automatic retry on timeout or network errors
-- Proxy rotation on failure (if proxy pool available)
-- Graceful fallback when analysis doesn't complete
-
-### API Approach
-
-- Automatic API key rotation on rate limits (429 errors)
-- Proxy rotation via `ProxyRotator` class
-- Bulk API fallback for quick hash checks (no rate limits)
-
-## Docker Usage
-
-### Build
-
-```bash
-docker build -t virustotal-scraper:latest .
+.
+├── vt_scraper.py       # Browser automation scanner
+├── vt_api.py           # HTTP API scanner (internal endpoints + bulk)
+├── vt_api_v3.py        # Official VT API v3 client
+├── vt_url_checker.py   # URL/Domain/IP checker
+├── Dockerfile          # Chromium + nodriver image
+├── docker-compose.yml  # Compose config
+├── pyproject.toml      # Project metadata and deps
+├── proxies.csv         # Proxy pool (gitignored)
+└── json/               # Scan results (gitignored)
 ```
-
-### Run with volume
-
-```bash
-# Copy files to scan
-cp sample.exe ./data/
-
-# Run scan
-docker run --rm \
-  -v $(pwd)/json:/app/json \
-  -v $(pwd)/data:/data \
-  --shm-size=2gb \
-  virustotal-scraper:latest \
-  /data/sample.exe
-```
-
-### Multiple files
-
-```bash
-docker run --rm \
-  -v $(pwd)/json:/app/json \
-  -v $(pwd)/data:/data \
-  --shm-size=2gb \
-  virustotal-scraper:latest \
-  /data/file1.exe /data/file2.exe
-```
-
-## Performance Notes
-
-- **Browser approach:** 20-60 seconds per file (includes analysis time)
-- **API approach:** 1-5 seconds per lookup (depends on rate limits)
-- **Bulk API:** <1 second for hash lookups (no rate limits, quick check only)
 
 ## Limitations
 
-- **Browser approach:** Slower, higher resource usage, requires Chromium
-- **API approach:** Subject to VT rate limits (4 req/min for full reports)
-- **Bulk API:** Returns only detection count, not full details
-- **Public API keys:** Limited rate, rotate frequently
-
-## Architecture
-
-### vt_scraper.py
-
-Headless browser automation using `nodriver`:
-
-1. Start Chromium in headless mode
-2. Upload file via `fetch()` API
-3. Navigate to results page
-4. Poll DOM for analysis status (Shadow DOM aware)
-5. Extract results via JavaScript
-6. Save to JSON
-
-**Pros:** Minimal requests, DOM parsing avoids API rate limits, Shadow DOM support
-**Cons:** Slower, higher memory usage
-
-### vt_api.py
-
-HTTP API wrapper with multiple strategies:
-
-1. **Upload mode:** POST to `/ui/files`, poll `/ui/analyses/{id}`
-2. **Lookup mode:** GET from `/ui/files/{hash}`
-3. **Bulk mode:** POST to Sysinternals partner API (no rate limits)
-4. **API v3 mode:** Official VT API v3 with key rotation
-5. **Browser mode:** DOM parsing for rate limit bypass
-
-**Pros:** Fast, flexible, multiple fallback strategies
-**Cons:** Subject to API rate limits
-
-## Development
-
-### Install dependencies
-
-```bash
-pip install nodriver httpx
-```
-
-### Code quality
-
-```bash
-ruff check --fix
-ruff format
-```
-
-### Run tests
-
-Currently no test suite. Contributions welcome!
-
-## Troubleshooting
-
-### "Chrome path not found"
-
-Ensure Chromium is installed:
-
-- **Linux:** `apt-get install chromium`
-- **macOS:** `brew install chromium`
-- **Windows:** Download from [chromium.org](https://download-chromium.appspot.com/)
-
-Or set `CHROME_PATH` environment variable.
-
-### Rate limited
-
-- Use `--bulk` flag for quick hash checks (no limits)
-- Use `--browser` flag for full reports via DOM parsing
-- Wait 60+ seconds before retry
-- Use different API keys if available
-
-### Proxy errors
-
-- Verify proxy format: `socks5://user:pass@host:port`
-- Check proxy credentials and connectivity
-- Ensure proxy supports CONNECT tunneling for HTTPS
-
-### File too large
-
-VirusTotal has file size limits:
-- Free: 256 MB
-- Premium: 500 MB
+- **Browser mode**: slower, needs Chromium, higher memory usage
+- **API mode**: subject to VT rate limits (4 req/min per key)
+- **Bulk API**: returns detection count only, not full vendor details
+- **File size**: VT free tier limit is 256 MB
 
 ## License
 
@@ -320,12 +150,8 @@ MIT
 
 ## Disclaimer
 
-This tool is for educational and authorized security research only. Ensure you have permission before scanning files you don't own. Respect VirusTotal's terms of service.
+For educational and authorized security research only. Respect [VirusTotal Terms of Service](https://www.virustotal.com/gui/terms-of-service).
 
-## Contributing
+## Author
 
-Issues and pull requests welcome. Please:
-
-1. Use `ruff check` and `ruff format` before submitting
-2. Add docstrings to new functions
-3. Update README for significant changes
+**Maksym Babenko** -- [GitHub](https://github.com/mazamaka) | [Telegram](https://t.me/Mazamaka)

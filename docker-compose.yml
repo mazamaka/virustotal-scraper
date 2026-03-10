@@ -1,0 +1,10 @@
+services:
+  vt-scraper:
+    build: .
+    image: virustotal-scraper:latest
+    volumes:
+      - ./json:/app/json
+      - ./data:/data
+    shm_size: 2gb
+    security_opt:
+      - seccomp:unconfined
